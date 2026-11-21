@@ -1,0 +1,399 @@
+#pragma once
+
+#include "./arguments.hpp"
+#include <algorithm>
+#include <concepts>
+#include <cstddef>
+#include <functional>
+#include <tuple>
+#include <type_traits>
+
+namespace prgrmr::concepts::invocable
+{
+namespace detail
+{
+    ///
+    /// <summary>
+    ///   Extracts the invocable's result type, parameters and signature.
+    /// </summary>
+    ///
+    template<typename TInvocable>
+    struct invocable_traits;
+
+    ///
+    /// <summary>
+    ///   Extracts the invocable's result type, parameters and signature.
+    /// </summary>
+    ///
+    template<typename TResult, typename... TParameters>
+    struct invocable_traits<TResult(TParameters...)>
+    {
+        using result_type = TResult;
+        using parameters_type = std::tuple<TParameters...>;
+        using signature_type = TResult(TParameters...);
+    };
+
+    template<typename TInvocable>
+    using invocable_result_type = typename invocable_traits<std::decay_t<TInvocable>>::result_type;
+
+    template<typename TInvocable>
+    using invocable_parameters_type = typename invocable_traits<std::decay_t<TInvocable>>::parameters_type;
+
+    template<typename TInvocable>
+    using invocable_signature_type = typename invocable_traits<std::decay_t<TInvocable>>::signature_type;
+
+    ///
+    /// <summary>
+    ///   Extracts the invocable's result type and signature for a function pointer.
+    /// </summary>
+    ///
+    template<typename TResult, typename... TParameters>
+    struct invocable_traits<TResult(*)(TParameters...)> : invocable_traits<TResult(TParameters...)> {};
+
+    ///
+    /// <summary>
+    ///   Extracts the invocable's result type and signature for a std::function.
+    /// </summary>
+    ///
+    template<typename TResult, typename... TParameters>
+    struct invocable_traits<std::function<TResult(TParameters...)>> : invocable_traits<TResult(TParameters...)> {};
+
+    ///
+    /// <summary>
+    ///   Extracts the invocable's result type and signature for a non-const member function pointer.
+    /// </summary>
+    ///
+    template<typename TClass, typename TResult, typename... TParameters>
+    struct invocable_traits<TResult(TClass::*)(TParameters...)> : invocable_traits<TResult(TParameters...)> {};
+
+    ///
+    /// <summary>
+    ///   Extracts the invocable's result type and signature for a const member function pointer.
+    /// </summary>
+    ///
+    template<typename TClass, typename TResult, typename... TParameters>
+    struct invocable_traits<TResult(TClass::*)(TParameters...) const> : invocable_traits<TResult(TParameters...)> {};
+
+    ///
+    /// <summary>
+    ///   Extracts the invocable's result type and signature for a functor or lambda by forwarding to its operator().
+    /// </summary>
+    ///
+    template<typename TClass>
+    requires requires { &std::remove_reference_t<TClass>::operator(); }
+    struct invocable_traits<TClass> : invocable_traits<decltype(&std::remove_reference_t<TClass>::operator())> {};
+
+    ///
+    /// <summary>
+    ///   Checks that all signatures are unique.
+    /// </summary>
+    ///
+    template<typename... TSignatures>
+    consteval bool are_invocables_signatures_unique()
+    {
+        if constexpr (arguments::IsAtMost<1, TSignatures...>)
+        {
+            return true;
+        }
+        else
+        {
+            return []<typename TSignature, typename... TRemainingSignatures>(std::type_identity<TSignature>, std::type_identity<TRemainingSignatures>...)
+            {
+                if constexpr ((std::is_same_v<TSignature, TRemainingSignatures> || ...))
+                {
+                    return false;
+                }
+                else
+                {
+                    return are_invocables_signatures_unique<TRemainingSignatures...>();
+                }
+            }(std::type_identity<TSignatures>{}...);
+        }
+    }
+
+    template<typename... TInvocables>
+    using invocables_type = std::tuple<std::decay_t<TInvocables>...>;
+
+    template<typename... TInvocables>
+    using invocable_signatures_type = std::tuple<invocable_signature_type<TInvocables>...>;
+
+    template<typename... TInvocables, typename... TParameters>
+    consteval std::size_t find_invocable_index(std::tuple<TParameters...>* = nullptr)
+    {
+        constexpr bool matches[] =
+        {
+            std::is_invocable_v<TInvocables, TParameters...>...
+        };
+
+        constexpr std::size_t match_count = std::ranges::count(matches, true);        
+
+        static_assert(match_count > 0, "The parameters signature does not match any of the invocables.");
+        static_assert(match_count <= 1, "The parameters signature matches multiple of the invocables.");
+
+        return std::ranges::distance(
+                 std::ranges::begin(matches),
+                 std::ranges::find(matches, true));
+    }
+
+    template<typename TParameters, typename... TInvocables>
+    struct find_invocable;
+
+    template<typename... TParameters, typename... TInvocables>
+    struct find_invocable<std::tuple<TParameters...>, TInvocables...>
+    {
+        using type = std::tuple_element_t<
+            find_invocable_index<TInvocables...>(static_cast<std::tuple<TParameters...>*>(nullptr)),
+            std::tuple<TInvocables...>>;
+    };
+
+    ///
+    /// <summary>
+    ///   Finds the index of the invocable matching the target type or signature.
+    /// </summary>
+    ///
+    template<typename TInvocable, typename... TInvocables>
+    consteval std::size_t find_delegate_index()
+    {
+        constexpr bool matches[] =
+        {
+            (std::same_as<TInvocable, TInvocables> ||
+             std::same_as<invocable_signature_type<TInvocable>,
+                          invocable_signature_type<TInvocables>>)...
+        };
+
+        constexpr std::size_t match_count = std::ranges::count(matches, true);    
+
+        static_assert(match_count > 0, "The invocable does not match any of the invocables.");
+        static_assert(match_count <= 1, "The invocable matches multiple of the invocables.");
+
+        return std::ranges::distance(
+                 std::ranges::begin(matches),
+                 std::ranges::find(matches, true));
+    }
+
+    ///
+    /// <summary>
+    ///   Finds the index of the delegate constructible from the target callable.
+    /// </summary>
+    ///
+    template<typename TInvocable, typename... TInvocables>
+    consteval std::size_t find_matching_delegate_index()
+    {
+        constexpr bool matches[] =
+        {
+            std::is_constructible_v<std::function<invocable_signature_type<TInvocables>>, TInvocable>...
+        };
+
+        constexpr std::size_t match_count = std::ranges::count(matches, true);        
+
+        static_assert(match_count > 0, "The invocable does not match any of the invocables.");
+        static_assert(match_count <= 1, "The invocable matches multiple of the invocables.");
+
+        return std::ranges::distance(
+                 std::ranges::begin(matches),
+                 std::ranges::find(matches, true));        
+    }
+}
+
+template<typename TInvocable>
+using invocable_traits = detail::invocable_traits<TInvocable>;
+
+///
+/// <summary>
+///   Deduce result type of an invocable.
+/// </summary>
+///
+template<typename TInvocable>
+using invocable_result_type = invocable_traits<TInvocable>::result_type;
+
+///
+/// <summary>
+///   Deduce an invocable's signature which is TResult(TParameters...)
+/// </summary>
+template<typename TInvocable>
+using invocable_parameters_type = invocable_traits<TInvocable>::parameters_type;
+
+///
+/// <summary>
+///   Deduce an invocable's signature which is TResult(TParameters...)
+/// </summary>
+template<typename TInvocable>
+using invocable_signature_type = invocable_traits<TInvocable>::signature_type;
+
+///
+/// <summary>
+///     Concept of an invocable that can be called with its deduced parameters.
+/// </summary>
+///
+template<typename TInvocable>
+concept Invocable =
+    []<typename... TParameters>(std::type_identity<std::tuple<TParameters...>>)
+    {
+        return std::invocable<TInvocable, TParameters...>;
+    }(std::type_identity<invocable_parameters_type<TInvocable>>{});
+
+///
+/// <summary>
+///     Verifies that an invocable can be called with the given parameters.
+/// </summary>
+///
+template<typename TInvocable, typename... TParameters>
+concept CanInvoke = std::invocable<TInvocable, TParameters...>;
+
+///
+/// <summary>
+///   A series of invocables.
+/// </summary>
+///
+template<typename... TInvocables>
+using invocables_type = typename detail::invocables_type<TInvocables...>;
+
+///
+/// <summary>
+///   Deduce the invocable based on its parameters from the series of invocables.
+/// </summary>
+///
+template<typename TParameters, typename... TInvocables>
+using find_invocable_type = typename detail::find_invocable<TParameters, TInvocables...>::type;
+
+///
+/// <summary>
+///   Finds the index of the invocable that matches the set of invocables.
+/// </summary>
+///
+template<typename TInvocable, typename... TInvocables>
+consteval std::size_t find_delegate_index()
+{
+    return detail::find_delegate_index<TInvocable, TInvocables...>();
+}
+
+///
+/// <summary>
+///   Finds the index of the delegate constructible from the target callable.
+/// </summary>
+///
+template<typename TInvocable, typename... TInvocables>
+consteval std::size_t find_matching_delegate_index()
+{
+    return detail::find_matching_delegate_index<TInvocable, TInvocables...>();
+}
+
+///
+/// <summary>
+///   The invocables common result type (taken from the first).
+/// </summary>
+///
+template<typename... TInvocables>
+requires (arguments::IsNotEmpty<TInvocables...>)
+using invocables_result_type = invocable_result_type<std::tuple_element_t<0, invocables_type<TInvocables...>>>;
+
+///
+/// <summary>
+///   Verify that all invocables in the series have the same result type.
+/// </summary>
+///
+template<typename... TInvocables>
+concept IsSameResultType =
+    arguments::IsAtMost<1, TInvocables...> ||
+    []<typename TInvocable, typename... RemaingInvocables>(std::type_identity<TInvocable>, std::type_identity<RemaingInvocables>...)
+    {
+        return (std::is_same_v<invocable_result_type<TInvocable>, invocable_result_type<RemaingInvocables>> && ...);
+    }(std::type_identity<TInvocables>{}...);
+
+template<typename... TInvocables>
+using invocable_signatures_type = std::tuple<detail::invocable_signature_type<TInvocables>...>;
+
+///
+/// <summary>
+///   Verify that each invocable in the series has a unique signature -> TResult(TParameters...).
+/// </summary>
+///
+template<typename... TInvocables>
+concept AreInvocablesSignaturesUnique =
+    detail::are_invocables_signatures_unique<invocable_signatures_type<TInvocables...>>();
+
+///
+/// <summary>
+///   Verify that each invocable in the series has different parameters.
+/// </summary>
+///
+template<typename TParameters, typename... TInvocables>
+struct are_invocables_parameters_unique : std::false_type {};
+
+///
+/// <summary>
+///   Verify that each invocable in the series has different parameters.
+/// </summary>
+///
+template<typename... TParameters, typename... TInvocables>
+struct are_invocables_parameters_unique<std::tuple<TParameters...>, TInvocables...>
+     : std::bool_constant<((std::is_invocable_v<TInvocables, TParameters...> ? 1 : 0) + ...) == 1> {};
+
+template<typename TParameters, typename... TInvocables>
+concept AreInvocablesParametersUnique =
+    are_invocables_parameters_unique<TParameters, TInvocables...>::value;
+
+///
+/// <summary>
+///   Verify that the provided parameters can invoke at least one invocable in the series.
+/// </summary>
+///
+template<typename TParameters, typename... TInvocables>
+struct can_invoke_any : std::false_type {};
+
+///
+/// <summary>
+///   Verify that the provided parameters can invoke at least one invocable in the series.
+/// </summary>
+///
+template<typename... TParameters, typename... TInvocables>
+struct can_invoke_any<std::tuple<TParameters...>, TInvocables...>
+     : std::bool_constant<(std::is_invocable_v<TInvocables, TParameters...> || ...)> {};
+
+template<typename TParameters, typename... TInvocables>
+concept CanInvokeAny =
+    can_invoke_any<TParameters, TInvocables...>::value;
+
+///
+/// <summary>
+///     Concept of an invocable that can be empty (i.e. cannot be invoked).
+/// </summary>
+///
+template<typename TInvocable>
+concept InvocableCanBeEmpty =
+    Invocable<TInvocable> &&
+    requires(const std::remove_reference_t<TInvocable>& invocable)
+    {
+        static_cast<bool>(invocable);
+    };
+
+///
+/// <summary>
+///     Invocable without a result (i.e. void).
+/// </summary>
+///
+template<typename TInvocable>
+concept InvocableWithoutResult =
+    Invocable<TInvocable> &&
+    std::is_void_v<invocable_result_type<TInvocable>>;
+
+///
+/// <summary>
+///     Invocable with a result (non-void).
+/// </summary>
+///
+template<typename TInvocable>
+concept InvocableWithResult =
+    Invocable<TInvocable> &&
+    not InvocableWithoutResult<TInvocable>;
+
+///
+/// <summary>
+///     Invocable that can be empty (i.e. cannot be invoked) but when defined invoking it produces a result (non-void).
+/// </summary>
+///
+template<typename TInvocable>
+concept InvocableCanBeEmptyWithResult =
+    InvocableCanBeEmpty<TInvocable> &&
+    InvocableWithResult<TInvocable>;
+}
