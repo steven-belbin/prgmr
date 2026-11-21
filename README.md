@@ -1,6 +1,6 @@
-# prgmr
+# prgrmr
 
-`prgmr` (namespace `prgrmr`) is a C++20 header-only library focused on providing reusable implementations of common design patterns and coding building blocks. By encapsulating boilerplate around delegates, factories, optional invocation, and type/invocable constraints, it lets C++20 applications focus on implementing domain features and functionality.
+`prgrmr` (namespace `prgrmr`) is a C++20 header-only library focused on providing reusable implementations of common design patterns and coding building blocks. By encapsulating boilerplate around delegates, factories, optional invocation, and type/invocable constraints, it lets C++20 applications focus on implementing domain features and functionality.
 
 ## Overview
 
@@ -40,22 +40,42 @@
 ## Quick Examples
 
 ### Delegate & Optional Invocation
+
+#### Conventinal
 ```cpp
-#include "delegate.hpp"
+#include <prgrmr/delegate.hpp>
 
 prgrmr::delegate<int(int, int)> on_add;
 
-if (auto result = on_add.invoke_optional(2, 3); !result) {
-    // Delegate is currently unassigned
+if (auto result = on_add.invoke_optional(2, 3); result)
+{
+    // Result is currently assigned
 }
 
 on_add.reset([](int a, int b) { return a + b; });
 auto sum = on_add.invoke_optional(2, 3); // std::optional<int>{5}
 ```
 
+#### Monads
+```cpp
+#include <prgrmr/delegate.hpp>
+
+prgrmr::delegate<int(int, int)> on_add;
+
+const auto result = on_add.invoke_optional(2, 3)
+                    .and_then([](int value)
+                    {
+                      return value * 2;
+                    })
+                    .or_else([]
+                    {
+                      return 0;
+                    })
+```
+
 ### Multi-Signature Delegates
 ```cpp
-#include "delegates.hpp"
+#include <prgrmr/delegates.hpp>
 #include <string>
 
 prgrmr::delegates<int(int), std::string(const std::string&)> handlers;
@@ -68,7 +88,7 @@ auto text = handlers.invoke_optional(std::string{"hi"}); // std::optional<std::s
 
 ### Factory & Factory Map
 ```cpp
-#include "factory_map.hpp"
+#include <prgrmr/factory_map.hpp>
 #include <memory>
 #include <string>
 
